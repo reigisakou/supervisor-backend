@@ -3,15 +3,21 @@ from flask_cors import CORS
 import sqlite3
 import datetime
 import os
+
+# Importación de la IA de Google
+try:
 import google.generativeai as genai
+GENAI_AVAILABLE = True
+except ImportError:
+GENAI_AVAILABLE = False
 
 app = Flask(__name__)
 CORS(app)
 DB_FILE = 'supervisor_data.db'
 
-# Configurar IA de Google (Gemini es GRATIS con limitaciones diarias generosas)
+# Configurar IA de Google (Gemini)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if GEMINI_API_KEY:
+if GEMINI_API_KEY and GENAI_AVAILABLE:
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
@@ -98,7 +104,7 @@ conn.commit()
 conn.close()
 return jsonify({"status": "ok"})
 
-# ==================== IA CON GEMINI (GRATIS) ====================
+# ==================== IA CON GEMINI ====================
 @app.route('/api/predict', methods=['GET'])
 def predict_dashboard():
 conn = sqlite3.connect(DB_FILE)
@@ -107,8 +113,8 @@ c.execute("SELECT machine, date FROM reports WHERE affects=1 ORDER BY date DESC 
 rows = c.fetchall()
 conn.close()
 
-if not rows or not GEMINI_API_KEY:
-return jsonify({"action": "Aún no hay suficientes datos para predecir, o no se configuró la IA."})
+if not rows or not GEMINI_API_KEY or not GENAI_AVAILABLE:
+return jsonify({"action": "Aún no hay suficientes datos para predecir, o no se configuró la llave de IA."})
 
 prompt = f"Basado en este historial de fallas de máquinas: {rows}, ¿cuál es el componente que probablemente falle pronto y en cuántos días recomiendas hacer un cambio preventivo? Responde en una sola frase corta."
 try:
@@ -127,7 +133,7 @@ c.execute("SELECT issue, q3, q4, minutes FROM reports WHERE machine=? ORDER BY d
 rows = c.fetchall()
 conn.close()
 
-if not rows or not GEMINI_API_KEY:
+if not rows or not GEMINI_API_KEY or not GENAI_AVAILABLE:
 return jsonify({"analysis": "No hay fallas previas para esta máquina. Se recomienda inspección visual básica en el próximo paro de fin de semana."})
 
 prompt = f"Soy un supervisor de planta. Estas son las últimas 5 fallas de la máquina '{machine_name}', sus contramedidas Q3 y Q4, y el tiempo de paro en minutos {rows}. Por favor, actúa como un ingeniero de mantenimiento y haz lo siguiente en tu respuesta: 1. Identifica la Causa Raíz más probable de estos fallos. 2. Dame 3 acciones concretas que debo hacer en el próximo Shutdown de fin de semana para que esto no vuelva a pasar."
@@ -135,7 +141,7 @@ try:
 response = model.generate_content(prompt)
 return jsonify({"analysis": response.text})
 except Exception as e:
-return jsonify({"analysis": "Error al comunicarse con la IA gratuita de Gemini."})
+return jsonify({"analysis": "Error al comunicarse con la IA de Google."})
 
 @app.route('/api/get_shutdown_recs', methods=['GET'])
 def get_shutdown_recs():
@@ -146,10 +152,9 @@ rows = c.fetchall()
 conn.close()
 
 recs = []
-if rows and GEMINI_API_KEY:
 for r in rows:
 recs.append({"machine": r[0], "issue": r[1], "q4": r[2]})
 return jsonify(recs)
 
 if __name__ == '__main__':
-app.run(host='0.0.0.0', port=10000) # Puerto común para Render
+app.run(host='0.0.0.0', port=10000)
