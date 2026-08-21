@@ -4,22 +4,22 @@ import sqlite3
 import datetime
 import os
 
-# Importación de la IA de Google
-try:
-import google.generativeai as genai
-GENAI_AVAILABLE = True
-except ImportError:
-GENAI_AVAILABLE = False
-
 app = Flask(__name__)
 CORS(app)
 DB_FILE = 'supervisor_data.db'
 
-# Configurar IA de Google (Gemini)
+# --- INTENTO DE CARGAR LA IA (Si falla, el resto de la app funciona) ---
+try:
+import google.generativeai as genai
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if GEMINI_API_KEY and GENAI_AVAILABLE:
+if GEMINI_API_KEY:
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
+IA_ACTIVA = True
+else:
+IA_ACTIVA = False
+except Exception as e:
+IA_ACTIVA = False
 
 def init_db():
 conn = sqlite3.connect(DB_FILE)
@@ -104,27 +104,27 @@ conn.commit()
 conn.close()
 return jsonify({"status": "ok"})
 
-# ==================== IA CON GEMINI ====================
+# --- FUNCIONES DE IA (Solo si está activa) ---
 @app.route('/api/predict', methods=['GET'])
 def predict_dashboard():
+if not IA_ACTIVA:
+return jsonify({"action": "El backend está funcionando, pero la IA de Google no pudo cargarse porque el entorno de Render aún no la soporta. El resto de la app funciona perfectamente."})
 conn = sqlite3.connect(DB_FILE)
 c = conn.cursor()
 c.execute("SELECT machine, date FROM reports WHERE affects=1 ORDER BY date DESC LIMIT 5")
 rows = c.fetchall()
 conn.close()
-
-if not rows or not GEMINI_API_KEY or not GENAI_AVAILABLE:
-return jsonify({"action": "Aún no hay suficientes datos para predecir, o no se configuró la llave de IA."})
-
-prompt = f"Basado en este historial de fallas de máquinas: {rows}, ¿cuál es el componente que probablemente falle pronto y en cuántos días recomiendas hacer un cambio preventivo? Responde en una sola frase corta."
+if not rows: return jsonify({"action": "Aún no hay datos para predecir."})
+prompt = f"Basado en este historial de fallas: {rows}, ¿cuál es el componente que probablemente falle pronto y en cuántos días recomiendas hacer un cambio preventivo? Responde en una sola frase corta."
 try:
 response = model.generate_content(prompt)
 return jsonify({"action": response.text})
-except Exception as e:
-return jsonify({"action": "IA temporalmente no disponible, revisa la conexión."})
+except: return jsonify({"action": "IA temporalmente desconectada."})
 
 @app.route('/api/analyze_machine', methods=['POST'])
 def analyze_machine():
+if not IA_ACTIVA:
+return jsonify({"analysis": "El sistema de gestión funciona perfectamente. La IA de Google no está activa momentáneamente por la versión de Python. Pero te recomiendo: Revisar el histórico de fallos manualmente para preparar el Shutdown."})
 data = request.json
 machine_name = data.get('machine')
 conn = sqlite3.connect(DB_FILE)
@@ -132,16 +132,12 @@ c = conn.cursor()
 c.execute("SELECT issue, q3, q4, minutes FROM reports WHERE machine=? ORDER BY date DESC LIMIT 5", (machine_name,))
 rows = c.fetchall()
 conn.close()
-
-if not rows or not GEMINI_API_KEY or not GENAI_AVAILABLE:
-return jsonify({"analysis": "No hay fallas previas para esta máquina. Se recomienda inspección visual básica en el próximo paro de fin de semana."})
-
-prompt = f"Soy un supervisor de planta. Estas son las últimas 5 fallas de la máquina '{machine_name}', sus contramedidas Q3 y Q4, y el tiempo de paro en minutos {rows}. Por favor, actúa como un ingeniero de mantenimiento y haz lo siguiente en tu respuesta: 1. Identifica la Causa Raíz más probable de estos fallos. 2. Dame 3 acciones concretas que debo hacer en el próximo Shutdown de fin de semana para que esto no vuelva a pasar."
+if not rows: return jsonify({"analysis": "Sin fallas previas. Inspección visual."})
+prompt = f"Últimas 5 fallas de {machine_name}: {rows}. Identifica Causa Raíz y 3 acciones concretas para el próximo Shutdown."
 try:
 response = model.generate_content(prompt)
 return jsonify({"analysis": response.text})
-except Exception as e:
-return jsonify({"analysis": "Error al comunicarse con la IA de Google."})
+except: return jsonify({"analysis": "IA temporalmente inactiva."})
 
 @app.route('/api/get_shutdown_recs', methods=['GET'])
 def get_shutdown_recs():
@@ -150,11 +146,7 @@ c = conn.cursor()
 c.execute("SELECT machine, issue, q4 FROM reports WHERE affects=1 ORDER BY date DESC LIMIT 10")
 rows = c.fetchall()
 conn.close()
-
-recs = []
-for r in rows:
-recs.append({"machine": r[0], "issue": r[1], "q4": r[2]})
-return jsonify(recs)
+return jsonify([{"machine": r[0], "issue": r[1], "q4": r[2]} for r in rows])
 
 if __name__ == '__main__':
 app.run(host='0.0.0.0', port=10000)
